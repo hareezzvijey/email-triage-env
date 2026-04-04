@@ -1,0 +1,132 @@
+name: email-triage-env
+description: >
+  AI Customer Support Email Triage & Resolution — an OpenEnv-compliant real-world
+  environment where agents classify emails, assign priority, choose routing actions,
+  and generate professional responses. Three difficulty tiers with dense partial-credit
+  rewards and fully deterministic graders.
+version: "1.0"
+author: "openenv-community"
+license: "Apache-2.0"
+tags:
+  - email
+  - nlp
+  - customer-support
+  - triage
+  - classification
+  - response-generation
+  - real-world
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+actions:
+  category:
+    type: string
+    enum: [billing, tech, general, complaint, spam]
+    description: "Email topic category"
+  priority:
+    type: string
+    enum: [low, medium, high, critical]
+    description: "Urgency level"
+  action_type:
+    type: string
+    enum: [classify, flag_spam, archive, escalate, respond]
+    required: false
+    description: "Routing decision (required for medium + hard tasks)"
+  response:
+    type: string
+    required: false
+    description: "Full draft response (required for hard task — graded for quality)"
+  reasoning:
+    type: string
+    required: false
+    description: "Agent's justification — earns bonus reward"
+
+# ── Observations ──────────────────────────────────────────────────────────────
+observations:
+  message:
+    type: string
+    description: "Full email body text (primary OpenEnv spec field)"
+  history:
+    type: list
+    items: string
+    description: "Prior thread messages as formatted strings"
+  subject:
+    type: string
+    description: "Email subject line"
+  sender:
+    type: string
+    description: "Sender address"
+  timestamp:
+    type: string
+    format: ISO-8601
+  email_id:
+    type: string
+    description: "Unique email identifier"
+  task:
+    type: string
+    description: "Active task id"
+  task_description:
+    type: string
+    description: "Full task instructions including scoring rubric"
+  step:
+    type: integer
+  emails_remaining:
+    type: integer
+  total_emails:
+    type: integer
+
+# ── Reward ────────────────────────────────────────────────────────────────────
+reward:
+  type: float
+  range: [0.0, 1.0]
+  per_step: true
+  description: >
+    Dense deterministic reward computed at every step.
+    Easy:   category(40%) + priority(30%) + reasoning(20%) + response_bonus(10%)
+    Medium: category(20%) + priority(15%) + action(50%) + reasoning(10%)
+            + response_bonus(5%) − false_escalation_penalty(30%)
+    Hard:   category(10%) + priority(10%) + action(10%) + response_quality(65%)
+            + reasoning(5%)
+    Response quality sub-scores: required_keywords(20%) + ideal_keywords(15%)
+                                 + structure(10%) + acknowledgment(10%) + length(10%)
+
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+tasks:
+  - id: email-classify
+    name: "Email Classification"
+    difficulty: easy
+    emails: 3
+    max_steps: 3
+    success_threshold: 0.70
+
+  - id: email-triage
+    name: "Email Inbox Triage"
+    difficulty: medium
+    emails: 5
+    max_steps: 5
+    success_threshold: 0.60
+
+  - id: email-respond
+    name: "Email Response Generation"
+    difficulty: hard
+    emails: 2
+    max_steps: 2
+    success_threshold: 0.50
+
+# ── API ──────────────────────────────────────────────────────────────────────
+api:
+  base_path: /
+  reset:    { method: POST, path: /reset,    session_header: X-Session-ID }
+  step:     { method: POST, path: /step,     session_header: X-Session-ID }
+  state:    { method: GET,  path: /state,    session_header: X-Session-ID }
+  health:   { method: GET,  path: /health }
+  tasks:    { method: GET,  path: /tasks }
+  grader:   { method: POST, path: /grader }
+  baseline: { method: GET,  path: /baseline }
+
+# ── Environment ───────────────────────────────────────────────────────────────
+environment:
+  stateful: true
+  multi_session: true
+  session_ttl_hours: 2
+  docker_port: 7860
+  hf_spaces_compatible: true
