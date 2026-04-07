@@ -30,18 +30,31 @@ Email triage is one of the most cognitively demanding real-world tasks: agents m
 
 ## 📁 Project Structure
 email-triage-env/
+
 ├── server/
+
 │ ├── app.py # FastAPI server + all required endpoints
+
 │ └── environment.py # EmailEnv class — reset() / step() / state()
+
 ├── app/
+
 │ ├── models.py # Typed Pydantic models (OpenEnv-compliant)
+
 │ ├── rewards.py # Deterministic graders — zero LLM calls
+
 │ ├── email_data.py # 15 realistic email scenarios with ground truth
+
 │ └── client.py # Async HTTP client (extends EnvClient)
+
 ├── inference.py # Baseline LLM agent — mandatory stdout format
+
 ├── openenv.yaml # OpenEnv metadata and API spec
+
 ├── Dockerfile # HF Spaces-compatible container
+
 ├── requirements.txt
+
 └── README.md
 
 ---
@@ -105,6 +118,7 @@ Acknowledgment / empathy	10%
 Length ≥ 80 words	10%
 Emails: enterprise account terminated without notice · API deprecation crisis affecting 500 clients + $4M/day revenue · unauthorized $1,200 charge
 
+```
 🔭 Observation Space
 class EmailObservation(Observation):
     message:          str        # Full email body (OpenEnv spec field)
@@ -119,7 +133,7 @@ class EmailObservation(Observation):
     emails_remaining: int
     total_emails:     int
     inbox_size:       int        # Alias for emails_remaining
-
+```
 ⚡ Action Space
 class EmailAction(Action):
     category:    str            # billing|tech|general|complaint|spam (required)
@@ -127,7 +141,7 @@ class EmailAction(Action):
     action_type: str | None     # classify|flag_spam|archive|escalate|respond
     response:    str | None     # Full response draft (hard task — graded)
     reasoning:   str | None     # Justification (bonus reward)
-
+```
 🚀 Quick Start
 Docker
 git clone https://github.com/hareezzvijey/email-triage-env
@@ -142,7 +156,7 @@ curl http://localhost:7860/health
 Local Python
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 7860 --reload
-
+```
 🤖 Running the Baseline Agent
 export HF_TOKEN="hf_..."
 export API_BASE_URL="https://api.groq.com/openai/v1"
@@ -163,7 +177,7 @@ Expected stdout:
 [STEP] step=4 action=(cat=general,pri=low,act=classify) reward=0.90 done=false error=null
 [STEP] step=5 action=(cat=spam,pri=low,act=classify) reward=0.90 done=true error=null
 [END] success=true steps=5 rewards=0.90,1.00,0.90,0.90,0.90
-
+```
 🐍 Python Client
 import asyncio
 from app.client import EmailTriageEnvClient
@@ -185,7 +199,7 @@ async def main():
             print(f"reward={result.reward:.3f}")
 
 asyncio.run(main())
-
+```
 📡 API Reference
 Method	Path	Description
 GET	/health	Liveness probe
@@ -211,7 +225,7 @@ curl -X POST https://hareezz-email-triage-env.hf.space/grader \
       "reasoning": "return query"
     }
   }'
-
+```
 📊 Baseline Scores (Llama 3 8B)
 Task	Mean Reward	Success
 email-classify (easy)	~0.90	✅
@@ -220,9 +234,9 @@ email-respond (hard)	~0.75	✅
 Note: Scores vary with model quality. Larger models (GPT-4, Claude, Qwen-72B) achieve 90%+ across all tasks.
 
 All graders are fully deterministic — run python inference.py to reproduce.
-
+```
 📄 License
 Apache 2.0
-
+```
 🏆 Live Space
 API Endpoint: https://hareezz-email-triage-env.hf.space
