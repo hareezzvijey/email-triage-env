@@ -68,7 +68,7 @@ inference.py  →  app/client.py  →  POST /step
                                         │
                                app/rewards.py
                                compute_reward()  [deterministic]
-
+```
 📋 Tasks
 Task 1 — email-classify · Easy · 5 emails
 Field	Weight	Detail
