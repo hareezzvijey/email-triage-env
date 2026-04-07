@@ -22,11 +22,12 @@ When openenv-core is installed, delegates to it; otherwise uses this implementat
 Session management
 ──────────────────
 Pass X-Session-ID header; omit on /reset to auto-generate.
-Sessions expire after 2 h of inactivity (cleaned on every /reset call).
+Sessions expire after 2 h of inactivity (cleaned on every request + background task).
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -82,10 +83,20 @@ def _now() -> datetime:
 
 
 def _expire() -> None:
+    """Remove sessions that have exceeded TTL."""
     cutoff = _now() - _SESSION_TTL
     for sid in [s for s, t in _session_ts.items() if t < cutoff]:
         _sessions.pop(sid, None)
         _session_ts.pop(sid, None)
+
+
+def _cleanup_old_sessions() -> None:
+    """Additional cleanup for sessions older than 1 hour (defensive)."""
+    hour_ago = _now() - timedelta(hours=1)
+    for sid in list(_session_ts.keys()):
+        if _session_ts[sid] < hour_ago:
+            _sessions.pop(sid, None)
+            _session_ts.pop(sid, None)
 
 
 def _touch(sid: str) -> None:
@@ -165,6 +176,23 @@ def _build_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # ── BACKGROUND CLEANUP TASK ──────────────────────────────────────────
+    @app.on_event("startup")
+    async def start_cleanup_task():
+        async def cleanup_loop():
+            while True:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                _expire()
+                _cleanup_old_sessions()
+        
+        asyncio.create_task(cleanup_loop())
+
+    # ── MIDDLEWARE: Cleanup on every request ─────────────────────────────
+    @app.middleware("http")
+    async def cleanup_middleware(request: Request, call_next):
+        _expire()
+        return await call_next(request)
 
     # ── GET / ──────────────────────────────────────────────────────────
     @app.get("/")

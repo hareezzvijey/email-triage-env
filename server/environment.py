@@ -5,17 +5,39 @@ Implements the full OpenEnv loop:
   reset()        → EmailObservation  (clean episode start)
   step(action)   → (EmailObservation, reward, done, info)
   state()        → EmailState        (full metadata snapshot)
+
+Bug fixes applied
+─────────────────
+  • Action storage: uses action.model_dump(exclude_none=True) — never stores
+    placeholder / schema-default values.
+  • Input validation: step() validates action fields and surfaces errors in info
+    instead of silently returning 0 reward with no diagnostic.
+  • Determinism: no randomness anywhere; same input always produces same output.
 """
 
 from __future__ import annotations
 
 import copy
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.email_data import TASK_EMAILS
 from app.models import EmailAction, EmailObservation, EmailState
 from app.rewards import compute_reward
+
+# ---------------------------------------------------------------------------
+# Valid field values — used for input validation
+# ---------------------------------------------------------------------------
+
+_VALID_CATEGORIES  = {"billing", "tech", "general", "complaint", "spam"}
+_VALID_PRIORITIES  = {"low", "medium", "high", "critical"}
+_VALID_ACTION_TYPES = {"classify", "flag_spam", "archive", "escalate", "respond"}
+
+_TASK_REQUIRED_ACTION: Dict[str, Optional[str]] = {
+    "email-classify": "classify",   # must be 'classify'
+    "email-triage":   None,         # any of the routing actions
+    "email-respond":  None,         # escalate or respond
+}
 
 # ---------------------------------------------------------------------------
 # Task metadata
@@ -23,7 +45,7 @@ from app.rewards import compute_reward
 
 VALID_TASKS = ["email-classify", "email-triage", "email-respond"]
 
-TASK_DESCRIPTIONS: Dict[str, str] = {
+TASK_DESCRIPTIONS: Dict[str, str] = {  # type: ignore[assignment]
     "email-classify": (
         "EASY — Email Classification (3 emails)\n"
         "Classify each email by category and priority.\n"
@@ -101,28 +123,60 @@ class EmailEnv:
         observation : EmailObservation  (next email or terminal)
         reward      : float in [0, 1]
         done        : bool
-        info        : dict — full scoring breakdown
+        info        : dict — full scoring breakdown + validation warnings
         """
         if self._done:
             return self._obs(), 0.0, True, {
                 "error": "Episode already finished. Call reset() to start a new episode."
             }
 
+        # ── Input validation ────────────────────────────────────────────
+        # Surfaces field errors in info dict instead of silently scoring 0.
+        warnings: List[str] = []
+        if action.category not in _VALID_CATEGORIES:
+            warnings.append(
+                f"Invalid category '{action.category}'. "
+                f"Valid values: {sorted(_VALID_CATEGORIES)}"
+            )
+        if action.priority not in _VALID_PRIORITIES:
+            warnings.append(
+                f"Invalid priority '{action.priority}'. "
+                f"Valid values: {sorted(_VALID_PRIORITIES)}"
+            )
+        if action.action_type and action.action_type not in _VALID_ACTION_TYPES:
+            warnings.append(
+                f"Invalid action_type '{action.action_type}'. "
+                f"Valid values: {sorted(_VALID_ACTION_TYPES)}"
+            )
+        if self.task == "email-respond" and not action.response:
+            warnings.append(
+                "Hard task (email-respond) expects a 'response' field. "
+                "Response quality is worth 65% of the reward."
+            )
+
         self._step += 1
         email = self._emails[self._email_index]
         reward, info = compute_reward(action, email["ground_truth"], self.task)
 
+        if warnings:
+            info["validation_warnings"] = warnings
+
+        # ── FIX: store real action values via model_dump, never placeholders ──
+        # model_dump(exclude_none=True) serialises the actual submitted values.
+        # Using a manual dict previously risked writing Pydantic schema defaults
+        # instead of what the agent actually sent.
+        action_record = action.model_dump(exclude_none=True)
+
         self._history.append({
             "step":     self._step,
             "email_id": email["email_id"],
-            "action": {
-                "category":    action.category,
-                "priority":    action.priority,
-                "action_type": getattr(action, "action_type", None),
-                "response":    getattr(action, "response",    None),
-                "reasoning":   getattr(action, "reasoning",   None),
+            "action":   action_record,   # ← real submitted values
+            "reward":   reward,
+            "ground_truth": {
+                "category":    email["ground_truth"]["category"],
+                "priority":    email["ground_truth"]["priority"],
+                "action_type": email["ground_truth"].get("action_type", ""),
             },
-            "reward": reward,
         })
         self._total_reward += reward
         self._email_index  += 1

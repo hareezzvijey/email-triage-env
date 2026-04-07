@@ -180,54 +180,120 @@ def compute_reward(
     Returns
     -------
     reward : float in [0.0, 1.0]
-    info   : dict with full scoring breakdown
+    info   : dict with FULL scoring breakdown (all keys always present)
+
+    Bug fixes
+    ---------
+    • All ground_truth accesses use .get() with safe defaults.
+    • wrong-category penalty (-0.10) applied when category is completely wrong
+      (not just worth 0.0 — gives agents clearer gradient signal).
+    • info dict always contains numeric values for all breakdown fields,
+      never None — downstream parsers get consistent types.
     """
-    # Accept both pydantic objects and plain dicts
+    # Accept both Pydantic objects and plain dicts uniformly
     if isinstance(action, dict):
         class _Wrap:
             def __init__(self, d: dict) -> None:
                 self.__dict__.update(d)
         action = _Wrap(action)
 
-    cat  = _category_score(getattr(action, "category",    None), ground_truth["category"])
-    pri  = _priority_score(getattr(action, "priority",    None), ground_truth["priority"])
-    reas = 1.0 if getattr(action, "reasoning", None) else 0.0
-    resp = 1.0 if getattr(action, "response",  None) else 0.0
+    # Core component scores
+    predicted_cat = getattr(action, "category",    None)
+    predicted_pri = getattr(action, "priority",    None)
+    predicted_act = getattr(action, "action_type", None)
+    predicted_res = getattr(action, "response",    None)
+    predicted_rea = getattr(action, "reasoning",   None)
 
+    true_cat = ground_truth.get("category", "")
+    true_pri = ground_truth.get("priority", "")
+    true_act = ground_truth.get("action_type", "")
+
+    cat  = _category_score(predicted_cat, true_cat)
+    pri  = _priority_score(predicted_pri, true_pri)
+    reas = 1.0 if predicted_rea else 0.0
+    resp = 1.0 if predicted_res else 0.0
+
+    # Wrong-category penalty: if category is completely wrong (score=0 AND
+    # the prediction is a valid but incorrect category), subtract 0.10 extra.
+    # This widens the gap between a correct answer (~1.0) and a random one
+    # (~0.2 reasoning only), giving agents stronger gradient signal.
+    wrong_cat_penalty = (
+        -0.10
+        if cat == 0.0 and predicted_cat and predicted_cat.lower() in
+           {"billing", "tech", "general", "complaint", "spam"}
+        else 0.0
+    )
+
+    # Always-present info dict (all numeric keys, never None)
     info: Dict[str, Any] = {
         "ground_truth": {
-            "category":    ground_truth["category"],
-            "priority":    ground_truth["priority"],
-            "action_type": ground_truth.get("action_type", ""),
+            "category":    true_cat,
+            "priority":    true_pri,
+            "action_type": true_act,
         },
-        "category_score": cat,
-        "priority_score": pri,
-        "has_reasoning":  bool(reas),
-        "has_response":   bool(resp),
+        "submitted": {
+            "category":    predicted_cat,
+            "priority":    predicted_pri,
+            "action_type": predicted_act,
+        },
+        "category_score":       cat,
+        "wrong_category_penalty": wrong_cat_penalty,
+        "priority_score":       pri,
+        "has_reasoning":        bool(reas),
+        "has_response":         bool(resp),
+        "action_score":         0.0,
+        "false_escalation_penalty": 0.0,
+        "response_quality_score":   0.0,
+        "response_quality_breakdown": {
+            "required_keywords": 0.0,
+            "ideal_keywords":    0.0,
+            "structure":         0.0,
+            "acknowledgment":    0.0,
+            "length":            0.0,
+        },
     }
 
     # ── Task 1: email-classify ──────────────────────────────────────────
     if task == "email-classify":
-        reward = 0.40 * cat + 0.30 * pri + 0.20 * reas + 0.10 * resp
-        info.update(action_score=None, response_quality_score=None)
+        reward = (
+            0.40 * cat
+            + wrong_cat_penalty
+            + 0.30 * pri
+            + 0.20 * reas
+            + 0.10 * resp
+        )
 
     # ── Task 2: email-triage ────────────────────────────────────────────
     elif task == "email-triage":
-        act     = _action_score(getattr(action, "action_type", None), ground_truth.get("action_type", ""))
-        penalty = _false_escalation_penalty(
-            getattr(action, "action_type", None),
-            ground_truth["category"],
-            ground_truth["priority"],
+        act_s   = _action_score(predicted_act, true_act)
+        penalty = _false_escalation_penalty(predicted_act, true_cat, true_pri)
+        reward  = (
+            0.20 * cat
+            + wrong_cat_penalty
+            + 0.15 * pri
+            + 0.50 * act_s
+            + 0.10 * reas
+            + 0.05 * resp
+            + penalty
         )
-        reward = 0.20 * cat + 0.15 * pri + 0.50 * act + 0.10 * reas + 0.05 * resp + penalty
-        info.update(action_score=act, false_escalation_penalty=penalty, response_quality_score=None)
+        info["action_score"]              = act_s
+        info["false_escalation_penalty"]  = penalty
 
     # ── Task 3: email-respond ───────────────────────────────────────────
     elif task == "email-respond":
-        act = _action_score(getattr(action, "action_type", None), ground_truth.get("action_type", ""))
-        rq, rq_bd = _grade_response(getattr(action, "response", None), ground_truth.get("response_config", {}))
-        reward = 0.10 * cat + 0.10 * pri + 0.10 * act + 0.65 * rq + 0.05 * reas
-        info.update(action_score=act, response_quality_score=rq, response_quality_breakdown=rq_bd)
+        act_s    = _action_score(predicted_act, true_act)
+        rq, rq_bd = _grade_response(predicted_res, ground_truth.get("response_config", {}))
+        reward   = (
+            0.10 * cat
+            + wrong_cat_penalty
+            + 0.10 * pri
+            + 0.10 * act_s
+            + 0.65 * rq
+            + 0.05 * reas
+        )
+        info["action_score"]                 = act_s
+        info["response_quality_score"]       = rq
+        info["response_quality_breakdown"]   = rq_bd
 
     else:
         reward = 0.0
