@@ -21,7 +21,7 @@ dependencies = [
 
 # Bug 2 fix: main() is now defined in server/app.py
 [project.scripts]
-email-triage-env = "server.run:main"
+server = "server.run:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "server*"]
