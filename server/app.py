@@ -58,14 +58,9 @@ except ImportError:
 
 
 def create_fastapi_app(env_class: type = EmailEnv) -> FastAPI:
-    """
-    OpenEnv-compatible factory.
-
-    When openenv-core is installed it delegates to the official factory.
-    Otherwise builds an equivalent FastAPI application directly.
-    """
     if _HAVE_OPENENV:
-        return _oe_factory(env_class)  # type: ignore
+        from app.models import EmailAction, EmailObservation
+        return _oe_factory(env_class, EmailAction, EmailObservation)
     return _build_app()
 
 
@@ -361,3 +356,23 @@ def _build_app() -> FastAPI:
 # Module-level app instance  →  uvicorn server.app:app
 # ---------------------------------------------------------------------------
 app = create_fastapi_app(EmailEnv)
+
+
+def main() -> None:
+    """
+    Entry point for the console script: email-triage-env
+    Defined in pyproject.toml [project.scripts] and entry_points.txt.
+    Starts the uvicorn server on 0.0.0.0:7860.
+    """
+    import uvicorn
+    uvicorn.run(
+        "server.app:app",
+        host="0.0.0.0",
+        port=7861,
+        workers=1,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

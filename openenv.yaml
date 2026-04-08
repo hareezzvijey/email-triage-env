@@ -51,19 +51,15 @@ observations:
     description: "Prior thread messages as formatted strings"
   subject:
     type: string
-    description: "Email subject line"
   sender:
     type: string
-    description: "Sender address"
   timestamp:
     type: string
     format: ISO-8601
   email_id:
     type: string
-    description: "Unique email identifier"
   task:
     type: string
-    description: "Active task id"
   task_description:
     type: string
     description: "Full task instructions including scoring rubric"
@@ -86,30 +82,28 @@ reward:
             + response_bonus(5%) − false_escalation_penalty(30%)
     Hard:   category(10%) + priority(10%) + action(10%) + response_quality(65%)
             + reasoning(5%)
-    Response quality sub-scores: required_keywords(20%) + ideal_keywords(15%)
-                                 + structure(10%) + acknowledgment(10%) + length(10%)
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 tasks:
   - id: email-classify
     name: "Email Classification"
     difficulty: easy
-    emails: 3
-    max_steps: 3
+    emails: 5
+    max_steps: 5
     success_threshold: 0.70
 
   - id: email-triage
     name: "Email Inbox Triage"
     difficulty: medium
-    emails: 5
-    max_steps: 5
+    emails: 7
+    max_steps: 7
     success_threshold: 0.60
 
   - id: email-respond
     name: "Email Response Generation"
     difficulty: hard
-    emails: 2
-    max_steps: 2
+    emails: 3
+    max_steps: 3
     success_threshold: 0.50
 
 # ── API ──────────────────────────────────────────────────────────────────────

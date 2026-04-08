@@ -1,9 +1,3 @@
-# ── Email Triage Environment ─────────────────────────────────────────────────
-# HF Spaces (Docker SDK) — port 7860
-# Standalone: docker build -t email-triage-env .
-#             docker run -p 7860:7860 email-triage-env
-# ─────────────────────────────────────────────────────────────────────────────
-
 FROM python:3.10
 
 WORKDIR /app

@@ -41,7 +41,7 @@ from app.models import EmailAction, EmailObservation
 API_BASE_URL: str       = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str         = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 API_KEY: str            = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "dummy"
-SERVER_URL: str         = os.getenv("EMAIL_TRIAGE_SERVER_URL", "http://localhost:7861")
+SERVER_URL: str         = os.getenv("EMAIL_TRIAGE_SERVER_URL", "http://localhost:7860")
 LOCAL_IMAGE_NAME: Optional[str] = os.getenv("LOCAL_IMAGE_NAME")
 SINGLE_TASK: Optional[str]      = os.getenv("EMAIL_TRIAGE_TASK")
 

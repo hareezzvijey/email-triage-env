@@ -45,15 +45,15 @@ _TASK_REQUIRED_ACTION: Dict[str, Optional[str]] = {
 
 VALID_TASKS = ["email-classify", "email-triage", "email-respond"]
 
-TASK_DESCRIPTIONS: Dict[str, str] = {  # type: ignore[assignment]
+TASK_DESCRIPTIONS: Dict[str, str] = {
     "email-classify": (
-        "EASY — Email Classification (3 emails)\n"
+        "EASY — Email Classification (5 emails)\n"
         "Classify each email by category and priority.\n"
         "action_type = 'classify'  (no routing needed)\n"
         "Scoring: category (40%) + priority (30%) + reasoning (20%) + response bonus (10%)"
     ),
     "email-triage": (
-        "MEDIUM — Inbox Triage (5 emails)\n"
+        "MEDIUM — Inbox Triage (7 emails)\n"
         "Classify each email and choose the correct routing action:\n"
         "  flag_spam | archive | escalate | respond\n"
         "Penalty: -0.30 for false escalation of non-urgent email.\n"
@@ -61,7 +61,7 @@ TASK_DESCRIPTIONS: Dict[str, str] = {  # type: ignore[assignment]
         "reasoning (10%) + response bonus (5%)"
     ),
     "email-respond": (
-        "HARD — Response Generation (2 emails)\n"
+        "HARD — Response Generation (3 emails)\n"
         "Classify, route, and draft a professional response (≥ 80 words).\n"
         "Response graded on: required keywords, ideal coverage, "
         "professional structure, empathy, and length.\n"
@@ -115,72 +115,75 @@ class EmailEnv:
     def step(
         self, action: EmailAction
     ) -> Tuple[EmailObservation, float, bool, Dict[str, Any]]:
-        """
-        Process one agent action.
 
-        Returns
-        -------
-        observation : EmailObservation  (next email or terminal)
-        reward      : float in [0, 1]
-        done        : bool
-        info        : dict — full scoring breakdown + validation warnings
-        """
+        # 🚨 Already finished safeguard
         if self._done:
             return self._obs(), 0.0, True, {
                 "error": "Episode already finished. Call reset() to start a new episode."
             }
 
+        # 🚨 NEW: Prevent index overflow BEFORE accessing email
+        if self._email_index >= len(self._emails):
+            self._done = True
+            return self._obs(), 0.0, True, {
+                "error": "No more emails to process."
+            }
+
         # ── Input validation ────────────────────────────────────────────
-        # Surfaces field errors in info dict instead of silently scoring 0.
         warnings: List[str] = []
+
         if action.category not in _VALID_CATEGORIES:
             warnings.append(
                 f"Invalid category '{action.category}'. "
                 f"Valid values: {sorted(_VALID_CATEGORIES)}"
             )
+
         if action.priority not in _VALID_PRIORITIES:
             warnings.append(
                 f"Invalid priority '{action.priority}'. "
                 f"Valid values: {sorted(_VALID_PRIORITIES)}"
             )
+
         if action.action_type and action.action_type not in _VALID_ACTION_TYPES:
             warnings.append(
                 f"Invalid action_type '{action.action_type}'. "
                 f"Valid values: {sorted(_VALID_ACTION_TYPES)}"
             )
+
         if self.task == "email-respond" and not action.response:
             warnings.append(
                 "Hard task (email-respond) expects a 'response' field. "
                 "Response quality is worth 65% of the reward."
             )
 
+        # ✅ SAFE now
         self._step += 1
         email = self._emails[self._email_index]
+
         reward, info = compute_reward(action, email["ground_truth"], self.task)
 
         if warnings:
             info["validation_warnings"] = warnings
 
-        # ── FIX: store real action values via model_dump, never placeholders ──
-        # model_dump(exclude_none=True) serialises the actual submitted values.
-        # Using a manual dict previously risked writing Pydantic schema defaults
-        # instead of what the agent actually sent.
+        # ✅ store real action
         action_record = action.model_dump(exclude_none=True)
 
         self._history.append({
-            "step":     self._step,
+            "step": self._step,
             "email_id": email["email_id"],
-            "action":   action_record,   # ← real submitted values
-            "reward":   reward,
+            "action": action_record,
+            "reward": reward,
             "ground_truth": {
-                "category":    email["ground_truth"]["category"],
-                "priority":    email["ground_truth"]["priority"],
+                "category": email["ground_truth"]["category"],
+                "priority": email["ground_truth"]["priority"],
                 "action_type": email["ground_truth"].get("action_type", ""),
             },
         })
-        self._total_reward += reward
-        self._email_index  += 1
 
+        self._total_reward += reward
+        self._email_index += 1
+
+        # ✅ Correct done logic
         if self._email_index >= len(self._emails):
             self._done = True
 
@@ -204,6 +207,15 @@ class EmailEnv:
             emails_remaining = max(0, total - self._email_index),
             action_history   = self._history,
         )
+    
+    async def reset_async(self):
+        return self.reset()
+
+    async def step_async(self, action):
+        return self.step(action)
+
+    def close(self):
+        pass
 
     # ------------------------------------------------------------------
     # Internal helpers
