@@ -16,20 +16,17 @@ dependencies = [
     "httpx>=0.25.0",
     "python-multipart>=0.0.6",
     "python-dotenv>=1.0.0",
-    # openenv-core is optional — the code has a graceful pydantic fallback.
-    # Install it if you want full openenv validate support.
-    # "openenv-core>=0.2.0",
+    "openenv-core>=0.2.0",
 ]
 
 # Bug 2 fix: main() is now defined in server/app.py
 [project.scripts]
-email-triage-env = "server.app:main"
+email-triage-env = "server.run:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "server*"]
 
 [tool.openenv]
-# Bug 1 fix: correct module path (was server.email_triage_env_new_environment)
 env_class = "server.environment:EmailEnv"
 action_cls = "app.models:EmailAction"
 observation_cls = "app.models:EmailObservation"
