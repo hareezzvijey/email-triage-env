@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Body
 from fastapi.responses import JSONResponse
 
 from app.email_data import TASK_EMAILS, ALL_EMAILS
@@ -41,6 +41,7 @@ from app.models import (
     EmailAction,
     EmailObservation,
     EmailState,
+    GraderRequest,
     GraderResult,
     StepResult,
 )
@@ -249,44 +250,45 @@ def _build_app() -> FastAPI:
         }
 
     # ── POST /grader ───────────────────────────────────────────────────
+   # In server/app.py, update the grader endpoint:
     @app.post("/grader")
-    async def grader(request: Request) -> GraderResult:
+    async def grader(body: GraderRequest = Body(...)) -> GraderResult:
         """
-        Run the deterministic grader on any (email_id, task, action) triple.
-        No session or episode needed — useful for offline evaluation.
-
-        Body JSON:
-          {
-            "email_id": "billing-001",
-            "task":     "email-triage",
-            "action": {
-              "category": "billing", "priority": "high",
-              "action_type": "respond", "reasoning": "..."
-            }
-          }
+        Deterministic grading without session.
         """
-        body      = await request.json()
-        email_id  = body.get("email_id", "")
-        task      = body.get("task", "email-classify")
-        action_d  = body.get("action", {})
 
+        email_id = body.email_id
+        task = body.task
+        action_d = body.action
+
+        # Validate inputs
         if email_id not in ALL_EMAILS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unknown email_id '{email_id}'. Valid IDs: {list(ALL_EMAILS)}",
             )
+
         if task not in VALID_TASKS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unknown task '{task}'. Valid: {VALID_TASKS}",
             )
 
+        # Compute reward
         gt = ALL_EMAILS[email_id]["ground_truth"]
         reward, breakdown = compute_reward(action_d, gt, task)
 
+        # FINAL SAFE CLAMP (STRICTLY BETWEEN 0 AND 1)
+        reward = reward * 0.95
+        reward = max(0.01, min(0.99, reward))
+        reward = float(f"{reward:.6f}")
+
         return GraderResult(
-            email_id=email_id, task=task,
-            action=action_d, reward=reward, breakdown=breakdown,
+            email_id=email_id,
+            task=task,
+            action=action_d,
+            reward=reward,
+            breakdown=breakdown,
         )
 
     # ── POST /reset ────────────────────────────────────────────────────
