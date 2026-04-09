@@ -1,6 +1,17 @@
 """
 app/rewards.py — Deterministic reward computation for the Email Triage Environment.
-FIXED: Ensures all scores are strictly between 0 and 1 (never exactly 0 or 1)
+
+Boundary fix
+─────────────
+Validator requires scores strictly in (0, 1) — never exactly 0.0 or 1.0.
+
+Root causes found:
+  • Exactly 1.0: perfect email-classify (cat+pri+reas+resp) = 0.40+0.30+0.20+0.10 = 1.0
+  • Exactly 0.0: wrong category + wrong_cat_penalty (-0.10) + no reasoning = -0.10 → 0.0
+
+Fix: _boundary_clamp(x) = max(1e-4, min(0.9999, x)) applied ONCE in compute_reward().
+DO NOT multiply reward by 0.95 — that distorts the signal and causes double-shrinkage
+when the grader endpoint naively applies it again.
 """
 
 from __future__ import annotations
@@ -8,13 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-EPSILON = 1e-6  # Small value to keep away from boundaries
-MIN_REWARD = EPSILON
-MAX_REWARD = 1.0 - EPSILON
+_EPS = 1e-4   # 0.0001 — keeps every reward strictly inside (0, 1)
 
 _PRIORITY_RANK: Dict[str, int] = {
     "low": 0, "medium": 1, "high": 2, "critical": 3,
@@ -34,82 +39,52 @@ _ACKNOWLEDGE = re.compile(
 )
 
 
-def _clamp_score(score: float) -> float:
-    """Ensure score is strictly between 0 and 1 (never exactly 0 or 1)."""
-    if score <= 0:
-        return MIN_REWARD
-    if score >= 1:
-        return MAX_REWARD
-    if score < MIN_REWARD:
-        return MIN_REWARD
-    if score > MAX_REWARD:
-        return MAX_REWARD
-    return score
+def _boundary_clamp(value: float) -> float:
+    """Return value clamped to the open interval (0, 1).
+    Result is always in [_EPS, 1 - _EPS] = [0.0001, 0.9999].
+    Applied ONCE at the end of compute_reward(). Never call this in callers.
+    """
+    return round(max(_EPS, min(1.0 - _EPS, value)), 6)
 
 
 def _category_score(predicted: Optional[str], truth: str) -> float:
-    """Returns score in (0, 1) - never exactly 0 or 1."""
     if not predicted:
-        return MIN_REWARD
-    is_correct = predicted.lower().strip() == truth.lower().strip()
-    if is_correct:
-        return MAX_REWARD
-    return MIN_REWARD
+        return 0.0
+    return 1.0 if predicted.lower().strip() == truth.lower().strip() else 0.0
 
 
 def _priority_score(predicted: Optional[str], truth: str) -> float:
-    """Returns score in (0, 1) - never exactly 0 or 1."""
     if not predicted:
-        return MIN_REWARD
-    
+        return 0.0
     pred = predicted.lower().strip()
-    truth_lower = truth.lower().strip()
-    
-    if pred == truth_lower:
-        return MAX_REWARD
-    
-    pred_rank = _PRIORITY_RANK.get(pred, -99)
-    truth_rank = _PRIORITY_RANK.get(truth_lower, -99)
-    diff = abs(pred_rank - truth_rank)
-    
-    if diff == 1:
-        return 0.5
-    
-    return MIN_REWARD
+    if pred == truth:
+        return 1.0
+    diff = abs(_PRIORITY_RANK.get(pred, -99) - _PRIORITY_RANK.get(truth, -99))
+    return 0.5 if diff == 1 else 0.0
 
 
 def _action_score(predicted: Optional[str], truth: str) -> float:
-    """Returns score in (0, 1) - never exactly 0 or 1."""
     if not predicted:
-        return MIN_REWARD
-    
+        return 0.0
     act = predicted.lower().strip()
-    gt = truth.lower().strip()
-    
+    gt  = truth.lower().strip()
     if act == gt:
-        return MAX_REWARD
-    
+        return 1.0
     near: Dict[str, set] = {
         "escalate": {"respond"},
-        "respond": {"escalate"},
-        "archive": {"respond"},
+        "respond":  {"escalate"},
+        "archive":  {"respond"},
         "flag_spam": set(),
-        "classify": {"respond", "archive"},
+        "classify":  {"respond", "archive"},
     }
-    
-    if act in near.get(gt, set()):
-        return 0.4
-    
-    return MIN_REWARD
+    return 0.4 if act in near.get(gt, set()) else 0.0
 
 
 def _false_escalation_penalty(
     action_type: Optional[str], category: str, priority: str
 ) -> float:
-    """Returns penalty (negative number or 0)."""
     if (action_type or "").lower() != "escalate":
         return 0.0
-    
     if category in ("spam", "general"):
         return -0.30
     if category in ("billing", "tech") and priority in ("low", "medium"):
@@ -121,10 +96,6 @@ def _grade_response(
     response_text: Optional[str],
     config: Dict[str, Any],
 ) -> Tuple[float, Dict[str, float]]:
-    """
-    Multi-signal response quality grader.
-    Returns (score in (0,1), breakdown_dict).
-    """
     bd: Dict[str, float] = {
         "required_keywords": 0.0,
         "ideal_keywords":    0.0,
@@ -132,62 +103,42 @@ def _grade_response(
         "acknowledgment":    0.0,
         "length":            0.0,
     }
-    
     if not response_text or len(response_text.strip()) < 10:
-        return MIN_REWARD, bd
+        return 0.0, bd
 
-    text = response_text.strip()
-    tl = text.lower()
+    text  = response_text.strip()
+    tl    = text.lower()
     words = len(text.split())
 
-    # Required keywords (max 0.20)
     required = config.get("required_keywords", [])
-    if required:
-        required_score = sum(kw.lower() in tl for kw in required) / len(required)
-        required_score = max(MIN_REWARD, min(MAX_REWARD, required_score))
-        bd["required_keywords"] = 0.20 * required_score
-    else:
-        bd["required_keywords"] = 0.20
-
-    # Ideal keywords (max 0.15)
-    ideal = config.get("ideal_keywords", [])
-    if ideal:
-        ideal_score = sum(kw.lower() in tl for kw in ideal) / len(ideal)
-        ideal_score = max(MIN_REWARD, min(MAX_REWARD, ideal_score))
-        bd["ideal_keywords"] = 0.15 * ideal_score
-    else:
-        bd["ideal_keywords"] = 0.15
-
-    # Structure: greeting + closing (max 0.10)
-    bd["structure"] = (
-        (0.05 if _GREETING.search(text) else MIN_REWARD) +
-        (0.05 if _CLOSING.search(text) else MIN_REWARD)
+    bd["required_keywords"] = (
+        0.20 * (sum(kw.lower() in tl for kw in required) / len(required))
+        if required else 0.20
     )
 
-    # Acknowledgment/empathy (max 0.10)
-    bd["acknowledgment"] = 0.10 if _ACKNOWLEDGE.search(text) else MIN_REWARD
+    ideal = config.get("ideal_keywords", [])
+    bd["ideal_keywords"] = (
+        0.15 * min(1.0, sum(kw.lower() in tl for kw in ideal) / len(ideal))
+        if ideal else 0.15
+    )
 
-    # Length (max 0.10)
+    bd["structure"] = (
+        (0.05 if _GREETING.search(text) else 0.0) +
+        (0.05 if _CLOSING.search(text) else 0.0)
+    )
+    bd["acknowledgment"] = 0.10 if _ACKNOWLEDGE.search(text) else 0.0
+
     min_w: int = config.get("min_words", 40)
-    if words >= min_w * 2:
-        bd["length"] = 0.10
-    elif words >= min_w:
-        bd["length"] = 0.07
-    elif words >= min_w // 2:
-        bd["length"] = 0.03
-    else:
-        bd["length"] = MIN_REWARD
+    bd["length"] = (
+        0.10 if words >= min_w * 2 else
+        0.07 if words >= min_w      else
+        0.03 if words >= min_w // 2 else
+        0.0
+    )
 
     raw = sum(bd.values())
-    raw_score = raw / 0.65 if raw > 0 else MIN_REWARD
-    raw_score = max(MIN_REWARD, min(MAX_REWARD, raw_score))
-    
-    return raw_score, bd
+    return min(1.0, raw / 0.65), bd
 
-
-# ---------------------------------------------------------------------------
-# Public entry point - THIS IS THE FUNCTION THAT WAS MISSING
-# ---------------------------------------------------------------------------
 
 def compute_reward(
     action: Any,
@@ -196,131 +147,99 @@ def compute_reward(
 ) -> Tuple[float, Dict[str, Any]]:
     """
     Compute per-step reward deterministically.
-    Returns reward strictly between 0 and 1 (never exactly 0 or 1).
+
+    Returns reward strictly in (0, 1) via _boundary_clamp applied ONCE here.
+    Callers (e.g. /grader, /baseline) must NOT apply additional clamping or
+    multiply the returned value — doing so will distort the reward signal.
     """
-    # Accept both Pydantic objects and plain dicts
     if isinstance(action, dict):
         class _Wrap:
             def __init__(self, d: dict) -> None:
                 self.__dict__.update(d)
         action = _Wrap(action)
 
-    # Core component scores
-    predicted_cat = getattr(action, "category", None)
-    predicted_pri = getattr(action, "priority", None)
+    predicted_cat = getattr(action, "category",    None)
+    predicted_pri = getattr(action, "priority",    None)
     predicted_act = getattr(action, "action_type", None)
-    predicted_res = getattr(action, "response", None)
-    predicted_rea = getattr(action, "reasoning", None)
+    predicted_res = getattr(action, "response",    None)
+    predicted_rea = getattr(action, "reasoning",   None)
 
     true_cat = ground_truth.get("category", "")
     true_pri = ground_truth.get("priority", "")
     true_act = ground_truth.get("action_type", "")
 
-    # Get individual scores (all already clamped to (0,1))
-    cat = _category_score(predicted_cat, true_cat)
-    pri = _priority_score(predicted_pri, true_pri)
-    
-    # Reasoning bonus - never exactly 1.0 or 0.0
-    reas = MAX_REWARD if predicted_rea else MIN_REWARD
-    resp = MAX_REWARD if predicted_res else MIN_REWARD
+    cat  = _category_score(predicted_cat, true_cat)
+    pri  = _priority_score(predicted_pri, true_pri)
+    reas = 1.0 if predicted_rea else 0.0
+    resp = 1.0 if predicted_res else 0.0
 
-    # Wrong-category penalty
+    # Wrong-category penalty (cat==0.0 and it's a valid but wrong category)
     wrong_cat_penalty = (
         -0.10
-        if cat == MIN_REWARD and predicted_cat and predicted_cat.lower() in
+        if cat == 0.0 and predicted_cat and predicted_cat.lower() in
            {"billing", "tech", "general", "complaint", "spam"}
         else 0.0
     )
 
-    # Info dict for debugging
     info: Dict[str, Any] = {
         "ground_truth": {
-            "category": true_cat,
-            "priority": true_pri,
+            "category":    true_cat,
+            "priority":    true_pri,
             "action_type": true_act,
         },
         "submitted": {
-            "category": predicted_cat,
-            "priority": predicted_pri,
+            "category":    predicted_cat,
+            "priority":    predicted_pri,
             "action_type": predicted_act,
         },
-        "category_score": cat,
-        "wrong_category_penalty": wrong_cat_penalty,
-        "priority_score": pri,
-        "has_reasoning": bool(predicted_rea),
-        "has_response": bool(predicted_res),
-        "action_score": 0.0,
-        "false_escalation_penalty": 0.0,
-        "response_quality_score": 0.0,
+        "category_score":             cat,
+        "wrong_category_penalty":     wrong_cat_penalty,
+        "priority_score":             pri,
+        "has_reasoning":              bool(reas),
+        "has_response":               bool(resp),
+        "action_score":               0.0,
+        "false_escalation_penalty":   0.0,
+        "response_quality_score":     0.0,
         "response_quality_breakdown": {
             "required_keywords": 0.0,
-            "ideal_keywords": 0.0,
-            "structure": 0.0,
-            "acknowledgment": 0.0,
-            "length": 0.0,
+            "ideal_keywords":    0.0,
+            "structure":         0.0,
+            "acknowledgment":    0.0,
+            "length":            0.0,
         },
     }
 
-    # ── Task 1: email-classify ──────────────────────────────────────────
     if task == "email-classify":
-        reward = (
-            0.40 * cat
-            + wrong_cat_penalty
-            + 0.30 * pri
-            + 0.20 * reas
-            + 0.10 * resp
+        raw_reward = (
+            0.40 * cat + wrong_cat_penalty +
+            0.30 * pri + 0.20 * reas + 0.10 * resp
         )
 
-    # ── Task 2: email-triage ────────────────────────────────────────────
     elif task == "email-triage":
-        act_s = _action_score(predicted_act, true_act)
+        act_s   = _action_score(predicted_act, true_act)
         penalty = _false_escalation_penalty(predicted_act, true_cat, true_pri)
-        reward = (
-            0.20 * cat
-            + wrong_cat_penalty
-            + 0.15 * pri
-            + 0.50 * act_s
-            + 0.10 * reas
-            + 0.05 * resp
-            + penalty
+        raw_reward = (
+            0.20 * cat + wrong_cat_penalty + 0.15 * pri +
+            0.50 * act_s + 0.10 * reas + 0.05 * resp + penalty
         )
-        info["action_score"] = act_s
+        info["action_score"]             = act_s
         info["false_escalation_penalty"] = penalty
 
-    # ── Task 3: email-respond ───────────────────────────────────────────
     elif task == "email-respond":
-        act_s = _action_score(predicted_act, true_act)
+        act_s    = _action_score(predicted_act, true_act)
         rq, rq_bd = _grade_response(predicted_res, ground_truth.get("response_config", {}))
-        reward = (
-            0.10 * cat
-            + wrong_cat_penalty
-            + 0.10 * pri
-            + 0.10 * act_s
-            + 0.65 * rq
-            + 0.05 * reas
+        raw_reward = (
+            0.10 * cat + wrong_cat_penalty + 0.10 * pri +
+            0.10 * act_s + 0.65 * rq + 0.05 * reas
         )
-        info["action_score"] = act_s
-        info["response_quality_score"] = rq
+        info["action_score"]               = act_s
+        info["response_quality_score"]     = rq
         info["response_quality_breakdown"] = rq_bd
 
     else:
-        reward = MIN_REWARD
+        raw_reward = 0.0
 
-    # FINAL CLAMP: Ensure reward is strictly between 0 and 1
-    if reward <= 0:
-        reward = MIN_REWARD
-    elif reward >= 1:
-        reward = MAX_REWARD
-    
-    if reward < MIN_REWARD:
-        reward = MIN_REWARD
-    if reward > MAX_REWARD:
-        reward = MAX_REWARD
-    
-    # Round to 6 decimal places for consistency
-    reward = reward * 0.95
-    reward = max(0.01, min(0.99, reward))
-    reward = float(f"{reward:.6f}")
+    # Apply boundary clamp ONCE — result is always in [0.0001, 0.9999]
+    reward = _boundary_clamp(raw_reward)
     info["reward"] = reward
-    
     return reward, info
