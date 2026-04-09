@@ -73,10 +73,11 @@ observations:
 # ── Reward ────────────────────────────────────────────────────────────────────
 reward:
   type: float
-  range: [0.0, 1.0]
+  range: [0.0001, 0.9999] 
   per_step: true
   description: >
     Dense deterministic reward computed at every step.
+    Strictly between 0 and 1 (never exactly 0 or 1).
     Easy:   category(40%) + priority(30%) + reasoning(20%) + response_bonus(10%)
     Medium: category(20%) + priority(15%) + action(50%) + reasoning(10%)
             + response_bonus(5%) − false_escalation_penalty(30%)
