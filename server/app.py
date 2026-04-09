@@ -22,16 +22,17 @@ When openenv-core is installed, delegates to it; otherwise uses this implementat
 Session management
 ──────────────────
 Pass X-Session-ID header; omit on /reset to auto-generate.
-Sessions expire after 2 h of inactivity (cleaned on every /reset call).
+Sessions expire after 2 h of inactivity (cleaned on every request + background task).
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Body
 from fastapi.responses import JSONResponse
 
 from app.email_data import TASK_EMAILS, ALL_EMAILS
@@ -40,6 +41,7 @@ from app.models import (
     EmailAction,
     EmailObservation,
     EmailState,
+    GraderRequest,
     GraderResult,
     StepResult,
 )
@@ -57,14 +59,9 @@ except ImportError:
 
 
 def create_fastapi_app(env_class: type = EmailEnv) -> FastAPI:
-    """
-    OpenEnv-compatible factory.
-
-    When openenv-core is installed it delegates to the official factory.
-    Otherwise builds an equivalent FastAPI application directly.
-    """
     if _HAVE_OPENENV:
-        return _oe_factory(env_class)  # type: ignore
+        from app.models import EmailAction, EmailObservation
+        return _oe_factory(env_class, EmailAction, EmailObservation)
     return _build_app()
 
 
@@ -82,10 +79,20 @@ def _now() -> datetime:
 
 
 def _expire() -> None:
+    """Remove sessions that have exceeded TTL."""
     cutoff = _now() - _SESSION_TTL
     for sid in [s for s, t in _session_ts.items() if t < cutoff]:
         _sessions.pop(sid, None)
         _session_ts.pop(sid, None)
+
+
+def _cleanup_old_sessions() -> None:
+    """Additional cleanup for sessions older than 1 hour (defensive)."""
+    hour_ago = _now() - timedelta(hours=1)
+    for sid in list(_session_ts.keys()):
+        if _session_ts[sid] < hour_ago:
+            _sessions.pop(sid, None)
+            _session_ts.pop(sid, None)
 
 
 def _touch(sid: str) -> None:
@@ -166,6 +173,23 @@ def _build_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    # ── BACKGROUND CLEANUP TASK ──────────────────────────────────────────
+    @app.on_event("startup")
+    async def start_cleanup_task():
+        async def cleanup_loop():
+            while True:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                _expire()
+                _cleanup_old_sessions()
+        
+        asyncio.create_task(cleanup_loop())
+
+    # ── MIDDLEWARE: Cleanup on every request ─────────────────────────────
+    @app.middleware("http")
+    async def cleanup_middleware(request: Request, call_next):
+        _expire()
+        return await call_next(request)
+
     # ── GET / ──────────────────────────────────────────────────────────
     @app.get("/")
     async def root() -> Dict[str, Any]:
@@ -226,44 +250,48 @@ def _build_app() -> FastAPI:
         }
 
     # ── POST /grader ───────────────────────────────────────────────────
+   # In server/app.py, update the grader endpoint:
     @app.post("/grader")
-    async def grader(request: Request) -> GraderResult:
+    async def grader(body: GraderRequest = Body(...)) -> GraderResult:
         """
-        Run the deterministic grader on any (email_id, task, action) triple.
-        No session or episode needed — useful for offline evaluation.
-
-        Body JSON:
-          {
-            "email_id": "billing-001",
-            "task":     "email-triage",
-            "action": {
-              "category": "billing", "priority": "high",
-              "action_type": "respond", "reasoning": "..."
-            }
-          }
+        Deterministic grading without session.
         """
-        body      = await request.json()
-        email_id  = body.get("email_id", "")
-        task      = body.get("task", "email-classify")
-        action_d  = body.get("action", {})
 
+        email_id = body.email_id
+        task = body.task
+        action_d = body.action
+
+        # Validate inputs
         if email_id not in ALL_EMAILS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unknown email_id '{email_id}'. Valid IDs: {list(ALL_EMAILS)}",
             )
+
         if task not in VALID_TASKS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unknown task '{task}'. Valid: {VALID_TASKS}",
             )
 
+        # Compute reward
         gt = ALL_EMAILS[email_id]["ground_truth"]
         reward, breakdown = compute_reward(action_d, gt, task)
 
+        # Apply EPS clamp once here as a safety net.
+        _EPS = 1e-6
+        if reward >= 1.0:
+            reward = 1.0 - _EPS
+        elif reward <= 0.0:
+            reward = _EPS
+        reward = float(f"{reward:.6f}")
+
         return GraderResult(
-            email_id=email_id, task=task,
-            action=action_d, reward=reward, breakdown=breakdown,
+            email_id=email_id,
+            task=task,
+            action=action_d,
+            reward=reward,
+            breakdown=breakdown,
         )
 
     # ── POST /reset ────────────────────────────────────────────────────
@@ -336,12 +364,16 @@ app = create_fastapi_app(EmailEnv)
 
 
 def main() -> None:
-    """Entry point for pyproject.toml [project.scripts]."""
+    """
+    Entry point for the console script: email-triage-env
+    Defined in pyproject.toml [project.scripts] and entry_points.txt.
+    Starts the uvicorn server on 0.0.0.0:7860.
+    """
     import uvicorn
     uvicorn.run(
         "server.app:app",
         host="0.0.0.0",
-        port=7860,          # HF Spaces required port
+        port=7860,
         workers=1,
         log_level="info",
     )
