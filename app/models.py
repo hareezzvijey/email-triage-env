@@ -113,6 +113,10 @@ class StepResult(BaseModel):
     done: bool
     info: Dict[str, Any] = Field(default_factory=dict)
 
+class GraderRequest(BaseModel):
+    email_id: str
+    task: str
+    action: Dict[str, Any]
 
 class GraderResult(BaseModel):
     email_id: str

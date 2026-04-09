@@ -318,7 +318,9 @@ def compute_reward(
         reward = MAX_REWARD
     
     # Round to 6 decimal places for consistency
-    reward = round(reward, 6)
+    reward = reward * 0.95
+    reward = max(0.01, min(0.99, reward))
+    reward = float(f"{reward:.6f}")
     info["reward"] = reward
     
     return reward, info
