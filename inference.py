@@ -141,7 +141,7 @@ def log_step(
     err = error if error else "null"
     print(
         f"[STEP] step={step} action={action_summary} "
-        f"reward={reward:.2f} done={str(done).lower()} error={err}",
+        f"reward={reward:.6f} done={str(done).lower()} error={err}",
         flush=True,
     )
 

@@ -115,6 +115,8 @@ def _get(sid: Optional[str]) -> EmailEnv:
 
 def _baseline_scores() -> Dict[str, BaselineScore]:
     """Keyword-based heuristic agent scores — reproducible lower bound."""
+    EPS = 1e-6 
+    
     _MAP = {
         "spam":      ("spam",      "low",      "flag_spam"),
         "billing":   ("billing",   "medium",   "respond"),
@@ -123,11 +125,13 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
         "complaint": ("complaint", "high",     "escalate"),
     }
     out: Dict[str, BaselineScore] = {}
+    
     for task in VALID_TASKS:
         emails = TASK_EMAILS[task]
         scores: List[float] = []
+        
         for e in emails:
-            gt  = e["ground_truth"]
+            gt = e["ground_truth"]
             cat, pri, act = _MAP.get(gt["category"], ("general", "low", "archive"))
             action_d = {
                 "category":    cat,
@@ -142,19 +146,33 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
                 "reasoning": "Heuristic classification based on email category.",
             }
             r, _ = compute_reward(action_d, gt, task)
-            scores.append(r)
+            
+            if r >= 1.0:
+                r = 1.0 - EPS
+            elif r <= 0.0:
+                r = EPS
+            scores.append(float(f"{r:.6f}"))
+        
+        # Calculate statistics
+        mean_r = sum(scores) / len(scores)
+        min_r = min(scores)
+        max_r = max(scores)
+        
+        mean_r = max(EPS, min(1.0 - EPS, mean_r))
+        min_r = max(EPS, min(1.0 - EPS, min_r))
+        max_r = max(EPS, min(1.0 - EPS, max_r))
+        
         out[task] = BaselineScore(
-            task=task, emails=len(emails),
-            mean_reward=round(sum(scores) / len(scores), 4),
-            min_reward=round(min(scores), 4),
-            max_reward=round(max(scores), 4),
-            scores=scores,
+            task=task,
+            emails=len(emails),
+            mean_reward=float(f"{mean_r:.6f}"),
+            min_reward=float(f"{min_r:.6f}"),
+            max_reward=float(f"{max_r:.6f}"),
+            scores=[float(f"{s:.6f}") for s in scores],
         )
     return out
 
-
 _BASELINE = _baseline_scores()
-
 
 # ---------------------------------------------------------------------------
 # App builder

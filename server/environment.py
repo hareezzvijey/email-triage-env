@@ -12,6 +12,7 @@ from app.email_data import TASK_EMAILS
 from app.models import EmailAction, EmailObservation, EmailState
 from app.rewards import compute_reward
 
+EPS = 1e-6
 VALID_TASKS = ["email-classify", "email-triage", "email-respond"]
 
 TASK_DESCRIPTIONS = {
@@ -27,7 +28,7 @@ class EmailEnv:
         self.task = task
         self._step = 0
         self._done = False
-        self._total_reward = 0.0
+        self._total_reward = EPS
         self._email_index = 0
         self._emails = []
         self._history = []
@@ -35,7 +36,7 @@ class EmailEnv:
     def reset(self) -> EmailObservation:
         self._step = 0
         self._done = False
-        self._total_reward = 0.0
+        self._total_reward = EPS
         self._email_index = 0
         self._emails = copy.deepcopy(TASK_EMAILS[self.task])
         self._history = []
@@ -44,7 +45,7 @@ class EmailEnv:
     def step(self, action: EmailAction) -> Tuple[EmailObservation, float, bool, Dict[str, Any]]:
         """Process action and return (observation, reward, done, info)."""
         if self._done:
-            return self._obs(), 0.0001, True, {"error": "Episode already finished"}
+            return self._obs(), EPS, True, {"error": "Episode already finished"}
         
         self._step += 1
         email = self._emails[self._email_index]
