@@ -149,7 +149,7 @@ def log_step(
 def log_end(success: bool, steps: int, rewards: List[float]) -> None:
     print(
         f"[END] success={str(success).lower()} steps={steps} "
-        f"rewards={','.join(f'{r:.2f}' for r in rewards)}",
+        f"rewards={','.join(f'{r:.6f}' for r in rewards)}",
         flush=True,
     )
 
@@ -330,4 +330,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
