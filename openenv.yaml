@@ -4,7 +4,7 @@ description: >
   environment where agents classify emails, assign priority, choose routing actions,
   and generate professional responses. Three difficulty tiers with dense partial-credit
   rewards and fully deterministic graders.
-version: "1.0"
+version: "2.0"
 author: "openenv-community"
 license: "Apache-2.0"
 tags:
@@ -73,16 +73,17 @@ observations:
 # ── Reward ────────────────────────────────────────────────────────────────────
 reward:
   type: float
-  range: [0.0001, 0.9999] 
+  range: [0.0001, 0.9999]
   per_step: true
   description: >
-    Dense deterministic reward computed at every step.
+    Dense deterministic reward computed at every step using MULTIPLICATIVE penalties.
     Strictly between 0 and 1 (never exactly 0 or 1).
     Easy:   category(40%) + priority(30%) + reasoning(20%) + response_bonus(10%)
+            × wrong_category_factor(0.9 if wrong)
     Medium: category(20%) + priority(15%) + action(50%) + reasoning(10%)
-            + response_bonus(5%) − false_escalation_penalty(30%)
+            + response_bonus(5%) × escalation_factor(0.7-0.8) × wrong_category_factor
     Hard:   category(10%) + priority(10%) + action(10%) + response_quality(65%)
-            + reasoning(5%)
+            + reasoning(5%) × wrong_category_factor
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 tasks:
