@@ -4,7 +4,7 @@ description: >
   environment where agents classify emails, assign priority, choose routing actions,
   and generate professional responses. Three difficulty tiers with dense partial-credit
   rewards and fully deterministic graders.
-version: "2.0"
+version: "1.0"
 author: "openenv-community"
 license: "Apache-2.0"
 tags:
