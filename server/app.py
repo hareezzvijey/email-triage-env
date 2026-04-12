@@ -27,6 +27,26 @@ Sessions expire after 2 h of inactivity (cleaned on every request + background t
 
 from __future__ import annotations
 
+# ============================================================================
+# FORCE CACHE CLEAR - MUST BE FIRST LINE
+# ============================================================================
+import sys
+import os
+
+# Delete all cached modules
+for module in list(sys.modules.keys()):
+    if module.startswith(('app.', 'server.')):
+        del sys.modules[module]
+
+# Disable future bytecode caching
+sys.dont_write_bytecode = True
+
+# Set environment flag
+os.environ['FORCE_RELOAD'] = 'true'
+
+print("[CACHE] Forced reload of all modules", flush=True)
+# ============================================================================
+
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -371,7 +391,30 @@ def _build_app() -> FastAPI:
             status_code=500,
             content={"error": str(exc), "type": type(exc).__name__},
         )
-
+    
+    @app.get("/debug/verify")
+    async def verify_code_version():
+        """Verify that the latest code is running"""
+        # Import rewards INSIDE the function to ensure fresh import
+        import app.rewards as rewards
+        
+        # Test wrong category penalty
+        test_reward, _ = rewards.compute_reward(
+            {"category": "wrong", "priority": "medium"},
+            {"category": "billing", "priority": "medium"},
+            "email-classify"
+        )
+        
+        return {
+            "status": "ok",
+            "eps": getattr(rewards, 'EPS', 'NOT_FOUND'),
+            "has_safe": hasattr(rewards, 'safe'),
+            "has_get_wrong_category_factor": hasattr(rewards, '_get_wrong_category_factor'),
+            "wrong_category_penalty_applied": test_reward < 0.3,
+            "test_reward_value": test_reward,
+            "expected_if_fixed": 0.27,
+            "message": "If test_reward_value is 0.27, cache is cleared. If 0.3, old code is running."
+        }
     return app
 
 

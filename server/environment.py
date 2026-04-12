@@ -53,6 +53,13 @@ class EmailEnv:
         # Convert action to dict for compute_reward if needed
         action_dict = action.model_dump(exclude_none=True) if hasattr(action, 'model_dump') else action.__dict__
         reward, info = compute_reward(action_dict, email["ground_truth"], self.task)
+        EPS = 1e-6
+        if reward <= 0:
+            reward = EPS
+        if reward >= 1:
+            reward = 1.0 - EPS
+        reward = max(EPS, min(1.0 - EPS, reward))
+        reward = float(f"{reward:.6f}")
         
         self._history.append({
             "step": self._step,
