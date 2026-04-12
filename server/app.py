@@ -1,32 +1,4 @@
-"""
-server/app.py — FastAPI server for the Email Triage Environment.
-
-Endpoints
-─────────
-POST /reset      Start a new episode
-POST /step       Submit one action
-GET  /state      Full episode state
-GET  /health     Liveness probe
-GET  /tasks      Task list with metadata
-POST /grader     Run grader on any (email_id, task, action) without an episode
-GET  /baseline   Pre-computed deterministic baseline scores
-GET  /           Environment info + endpoint map
-
-OpenEnv compatibility
-─────────────────────
-Exposes  create_fastapi_app(env_class)  so it can be called as:
-    from openenv.core.env_server import create_fastapi_app
-    app = create_fastapi_app(EmailEnv)
-When openenv-core is installed, delegates to it; otherwise uses this implementation.
-
-Session management
-──────────────────
-Pass X-Session-ID header; omit on /reset to auto-generate.
-Sessions expire after 2 h of inactivity (cleaned on every request + background task).
-"""
-
 from __future__ import annotations
-
 
 import asyncio
 import uuid
@@ -49,106 +21,99 @@ from app.models import (
 from app.rewards import compute_reward
 from server.environment import EmailEnv, VALID_TASKS, TASK_DESCRIPTIONS
 
-_HAVE_OPENENV = False  # Never delegate to openenv-core factory
+EPS = 1e-6
 
-def create_fastapi_app(env_class=EmailEnv):
-    return _build_app()
+# Force use our own implementation - NEVER delegate to openenv-core
+_HAVE_OPENENV = False
 
 
 # ---------------------------------------------------------------------------
 # Session store
 # ---------------------------------------------------------------------------
-
-_sessions:    Dict[str, EmailEnv] = {}
-_session_ts:  Dict[str, datetime] = {}
+_sessions: Dict[str, EmailEnv] = {}
+_session_ts: Dict[str, datetime] = {}
 _SESSION_TTL = timedelta(hours=2)
 
 
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+def _now():
+    return datetime.now(timezone.utc)
 
 
-def _expire() -> None:
-    """Remove sessions that have exceeded TTL."""
+def _expire():
     cutoff = _now() - _SESSION_TTL
-    for sid in [s for s, t in _session_ts.items() if t < cutoff]:
-        _sessions.pop(sid, None)
-        _session_ts.pop(sid, None)
-
-
-def _cleanup_old_sessions() -> None:
-    """Additional cleanup for sessions older than 1 hour (defensive)."""
-    hour_ago = _now() - timedelta(hours=1)
     for sid in list(_session_ts.keys()):
-        if _session_ts[sid] < hour_ago:
+        if _session_ts[sid] < cutoff:
             _sessions.pop(sid, None)
             _session_ts.pop(sid, None)
 
 
-def _touch(sid: str) -> None:
+def _touch(sid: str):
     _session_ts[sid] = _now()
 
 
 def _get(sid: Optional[str]) -> EmailEnv:
     if not sid or sid not in _sessions:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session '{sid}' not found. Call POST /reset first.",
-        )
+        raise HTTPException(status_code=404, detail="Session not found")
     _touch(sid)
     return _sessions[sid]
 
 
 # ---------------------------------------------------------------------------
-# Baseline scores (deterministic heuristic — no LLM)
+# Baseline (FIXED COMPLETELY)
 # ---------------------------------------------------------------------------
-
 def _baseline_scores() -> Dict[str, BaselineScore]:
-    """Keyword-based heuristic agent scores — reproducible lower bound."""
-    EPS = 1e-6 
-    
     _MAP = {
-        "spam":      ("spam",      "low",      "flag_spam"),
-        "billing":   ("billing",   "medium",   "respond"),
-        "tech":      ("tech",      "high",     "respond"),
-        "general":   ("general",   "low",      "archive"),
-        "complaint": ("complaint", "high",     "escalate"),
+        "spam": ("spam", "low", "flag_spam"),
+        "billing": ("billing", "medium", "respond"),
+        "tech": ("tech", "high", "respond"),
+        "general": ("general", "low", "archive"),
+        "complaint": ("complaint", "high", "escalate"),
     }
+
     out: Dict[str, BaselineScore] = {}
-    
+
     for task in VALID_TASKS:
         emails = TASK_EMAILS[task]
         scores: List[float] = []
-        
+
         for e in emails:
             gt = e["ground_truth"]
             cat, pri, act = _MAP.get(gt["category"], ("general", "low", "archive"))
+
             action_d = {
-                "category":    cat,
-                "priority":    pri,
+                "category": cat,
+                "priority": pri,
                 "action_type": act,
-                "response": (
-                    "Dear Customer, I sincerely apologize for the inconvenience. "
-                    "We are investigating this as a top priority and will resolve it urgently. "
-                    "Please expect an update within 2 hours. Kind regards, Support Team"
-                    if gt.get("requires_response") else None
-                ),
-                "reasoning": "Heuristic classification based on email category.",
+                "response": "Auto response" if gt.get("requires_response") else None,
+                "reasoning": "heuristic",
             }
+
             r, _ = compute_reward(action_d, gt, task)
-            
-            r = max(EPS, min(1.0 - EPS, float(r)))
+
+            # STRICT CLAMP
+            r = float(r)
+            if r <= 0.0 or r != r:
+                r = EPS
+            elif r >= 1.0:
+                r = 1.0 - EPS
+
             scores.append(r)
-        
-        # Calculate statistics
-        mean_r = sum(scores) / len(scores)
-        min_r = min(scores)
-        max_r = max(scores)
-        
-        mean_r = max(EPS, min(1.0 - EPS, mean_r))
-        min_r = max(EPS, min(1.0 - EPS, min_r))
-        max_r = max(EPS, min(1.0 - EPS, max_r))
-        
+
+        # clamp scores list WITH ROUNDING - CRITICAL for validator
+        scores = [
+            float(f"{max(EPS, min(1.0 - EPS, float(s))):.6f}")
+            for s in scores
+        ]
+
+        raw_mean = sum(scores) / len(scores)
+        raw_min = min(scores)
+        raw_max = max(scores)
+
+        # clamp + format safely
+        mean_r = float(f"{max(EPS, min(1.0 - EPS, raw_mean)):.6f}")
+        min_r = float(f"{max(EPS, min(1.0 - EPS, raw_min)):.6f}")
+        max_r = float(f"{max(EPS, min(1.0 - EPS, raw_max)):.6f}")
+
         out[task] = BaselineScore(
             task=task,
             emails=len(emails),
@@ -157,164 +122,91 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
             max_reward=max_r,
             scores=scores,
         )
+
     return out
+
 
 _BASELINE = _baseline_scores()
 
-# ---------------------------------------------------------------------------
-# App builder
-# ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# App Builder
+# ---------------------------------------------------------------------------
 def _build_app() -> FastAPI:
-
     app = FastAPI(
         title="Email Triage Environment",
-        description=(
-            "OpenEnv-compliant real-world environment simulating AI customer-support "
-            "email triage and professional response generation."
-        ),
+        description="OpenEnv-compliant real-world environment for AI email triage",
         version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
     )
 
-    # ── BACKGROUND CLEANUP TASK ──────────────────────────────────────────
+    # ---------------- BACKGROUND CLEANUP ----------------
     @app.on_event("startup")
     async def start_cleanup_task():
         async def cleanup_loop():
             while True:
-                await asyncio.sleep(300)  # Run every 5 minutes
+                await asyncio.sleep(300)
                 _expire()
-                _cleanup_old_sessions()
         
         asyncio.create_task(cleanup_loop())
 
-    # ── MIDDLEWARE: Cleanup on every request ─────────────────────────────
+    # ---------------- MIDDLEWARE ----------------
     @app.middleware("http")
     async def cleanup_middleware(request: Request, call_next):
         _expire()
         return await call_next(request)
 
-    # ── GET / ──────────────────────────────────────────────────────────
+    # ---------------- GET / ----------------
     @app.get("/")
-    async def root() -> Dict[str, Any]:
+    async def root():
         return {
             "name": "Email Triage Environment",
             "version": "1.0.0",
             "openenv": True,
             "tasks": VALID_TASKS,
             "active_sessions": len(_sessions),
-            "endpoints": {
-                "POST /reset":    "Start a new episode",
-                "POST /step":     "Submit one action",
-                "GET  /state":    "Full episode state",
-                "GET  /health":   "Liveness probe",
-                "GET  /tasks":    "List tasks + metadata",
-                "POST /grader":   "Grade any action without an episode",
-                "GET  /baseline": "Pre-computed baseline scores",
-                "GET  /docs":     "Swagger UI",
-            },
         }
 
-    # ── GET /health ────────────────────────────────────────────────────
+    # ---------------- GET /health ----------------
     @app.get("/health")
-    async def health() -> Dict[str, Any]:
+    async def health():
         return {
-            "status":          "ok",
+            "status": "ok",
             "active_sessions": len(_sessions),
-            "timestamp":       _now().isoformat(),
+            "timestamp": _now().isoformat(),
         }
 
-    # ── GET /tasks ─────────────────────────────────────────────────────
+    # ---------------- GET /tasks ----------------
     @app.get("/tasks")
-    async def list_tasks() -> Dict[str, Any]:
+    async def list_tasks():
         return {
             "tasks": [
                 {
-                    "id":         t,
+                    "id": t,
                     "difficulty": ["easy", "medium", "hard"][i],
-                    "emails":     len(TASK_EMAILS[t]),
-                    "summary":    TASK_DESCRIPTIONS[t].split("\n")[0],
+                    "emails": len(TASK_EMAILS[t]),
                     "description": TASK_DESCRIPTIONS[t],
                 }
                 for i, t in enumerate(VALID_TASKS)
             ]
         }
 
-    # ── GET /baseline ──────────────────────────────────────────────────
+    # ---------------- GET /baseline ----------------
     @app.get("/baseline")
-    async def baseline() -> Dict[str, Any]:
+    async def baseline():
         return {
-            "agent":         "heuristic-keyword-classifier",
+            "agent": "heuristic-keyword-classifier",
             "deterministic": True,
-            "note": (
-                "Scores achieved by a keyword-based heuristic with no LLM. "
-                "Serves as a reproducible lower-bound baseline."
-            ),
             "scores": {k: v.model_dump() for k, v in _BASELINE.items()},
         }
 
-    # ── POST /grader ───────────────────────────────────────────────────
-   # In server/app.py, update the grader endpoint:
-    @app.post("/grader")
-    async def grader(body: GraderRequest = Body(...)) -> GraderResult:
-        """
-        Deterministic grading without session.
-        """
-
-        email_id = body.email_id
-        task = body.task
-        action_d = body.action
-
-        # Validate inputs
-        if email_id not in ALL_EMAILS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown email_id '{email_id}'. Valid IDs: {list(ALL_EMAILS)}",
-            )
-
-        if task not in VALID_TASKS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown task '{task}'. Valid: {VALID_TASKS}",
-            )
-
-        # Compute reward
-        gt = ALL_EMAILS[email_id]["ground_truth"]
-        reward, breakdown = compute_reward(action_d, gt, task)
-
-        # Apply EPS clamp — never use string formatting which can round to exactly 1.0
-        _EPS = 1e-6
-        reward = max(_EPS, min(1.0 - _EPS, float(reward)))
-
-        return GraderResult(
-            email_id=email_id,
-            task=task,
-            action=action_d,
-            reward=reward,
-            breakdown=breakdown,
-        )
-
-    # ── POST /reset ────────────────────────────────────────────────────
+    # ---------------- POST /reset ----------------
     @app.post("/reset")
-    async def reset(
-        request: Request,
-        x_session_id: Optional[str] = Header(default=None),
-    ) -> Dict[str, Any]:
-        _expire()
-
-        body: Dict[str, Any] = {}
-        try:
-            body = await request.json()
-        except Exception:
-            pass
-
+    async def reset(request: Request, x_session_id: Optional[str] = Header(None)):
+        body = await request.json() if request.headers.get("content-type") else {}
         task = body.get("task", "email-classify")
+
         if task not in VALID_TASKS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown task '{task}'. Valid: {VALID_TASKS}",
-            )
+            raise HTTPException(400, "Invalid task")
 
         sid = x_session_id or str(uuid.uuid4())
         env = EmailEnv(task=task)
@@ -324,44 +216,78 @@ def _build_app() -> FastAPI:
         _touch(sid)
 
         return {
-            "session_id":  sid,
+            "session_id": sid,
             "observation": obs.model_dump(),
-            "done":        False,
-            "info":        {"task": task, "total_emails": len(TASK_EMAILS[task])},
+            "done": False,
         }
 
-    # ── POST /step ─────────────────────────────────────────────────────
+    # ---------------- POST /step ----------------
     @app.post("/step")
-    async def step(
-        action: EmailAction,
-        x_session_id: Optional[str] = Header(default=None),
-    ) -> StepResult:
+    async def step(action: EmailAction, x_session_id: Optional[str] = Header(None)):
         env = _get(x_session_id)
         obs, reward, done, info = env.step(action)
-        return StepResult(observation=obs, reward=reward, done=done, info=info)
 
-    # ── GET /state ─────────────────────────────────────────────────────
+        # STRICT CLAMP WITH ROUNDING
+        reward = float(reward)
+        if reward <= 0.0 or reward != reward:
+            reward = EPS
+        elif reward >= 1.0:
+            reward = 1.0 - EPS
+        
+        # 🔥 CRITICAL: Round to 6 decimal places
+        reward = float(f"{reward:.6f}")
+
+        return StepResult(
+            observation=obs,
+            reward=reward,
+            done=done,
+            info=info,
+        )
+
+    # ---------------- POST /grader ----------------
+    @app.post("/grader")
+    async def grader(body: GraderRequest = Body(...)):
+        email_id = body.email_id
+        task = body.task
+        action_d = body.action
+
+        if email_id not in ALL_EMAILS:
+            raise HTTPException(400, "Invalid email_id")
+
+        if task not in VALID_TASKS:
+            raise HTTPException(400, "Invalid task")
+
+        gt = ALL_EMAILS[email_id]["ground_truth"]
+        reward, breakdown = compute_reward(action_d, gt, task)
+
+        # STRICT CLAMP WITH ROUNDING
+        reward = float(reward)
+        if reward <= 0.0 or reward != reward:
+            reward = EPS
+        elif reward >= 1.0:
+            reward = 1.0 - EPS
+        
+        # 🔥 CRITICAL: Round to 6 decimal places
+        reward = float(f"{reward:.6f}")
+
+        return GraderResult(
+            email_id=email_id,
+            task=task,
+            action=action_d,
+            reward=reward,
+            breakdown=breakdown,
+        )
+
+    # ---------------- GET /state ----------------
     @app.get("/state")
-    async def state(
-        x_session_id: Optional[str] = Header(default=None),
-    ) -> EmailState:
+    async def state(x_session_id: Optional[str] = Header(None)):
         return _get(x_session_id).state()
 
-    # ── Error handler ──────────────────────────────────────────────────
-    @app.exception_handler(Exception)
-    async def _err(req: Request, exc: Exception) -> JSONResponse:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(exc), "type": type(exc).__name__},
-        )
-    
+    # ---------------- GET /debug/verify ----------------
     @app.get("/debug/verify")
     async def verify_code_version():
-        """Verify that the latest code is running"""
-        # Import rewards INSIDE the function to ensure fresh import
         import app.rewards as rewards
         
-        # Test wrong category penalty
         test_reward, _ = rewards.compute_reward(
             {"category": "wrong", "priority": "medium"},
             {"category": "billing", "priority": "medium"},
@@ -376,23 +302,22 @@ def _build_app() -> FastAPI:
             "wrong_category_penalty_applied": test_reward < 0.3,
             "test_reward_value": test_reward,
             "expected_if_fixed": 0.27,
-            "message": "If test_reward_value is 0.27, cache is cleared. If 0.3, old code is running."
         }
+
     return app
 
 
 # ---------------------------------------------------------------------------
-# Module-level app instance  →  uvicorn server.app:app
+# Entry point
 # ---------------------------------------------------------------------------
-app = create_fastapi_app(EmailEnv)
+def create_fastapi_app(env_class=EmailEnv):
+    return _build_app()
+
+
+app = create_fastapi_app()
 
 
 def main() -> None:
-    """
-    Entry point for the console script: email-triage-env
-    Defined in pyproject.toml [project.scripts] and entry_points.txt.
-    Starts the uvicorn server on 0.0.0.0:7860.
-    """
     import uvicorn
     uvicorn.run(
         "server.app:app",
