@@ -75,6 +75,15 @@ class EmailEnv:
             },
         })
         self._total_reward += reward
+
+        # 🔥 CRITICAL FIX: clamp total_reward
+        if self._total_reward <= 0.0 or self._total_reward != self._total_reward:
+            self._total_reward = EPS
+        elif self._total_reward >= 1.0:
+            self._total_reward = 1.0 - EPS
+
+        # 🔥 CRITICAL: rounding
+        self._total_reward = float(f"{self._total_reward:.6f}")
         self._email_index += 1
         
         if self._email_index >= len(self._emails):

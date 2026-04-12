@@ -61,6 +61,28 @@ def _get(sid: Optional[str]) -> EmailEnv:
 # ---------------------------------------------------------------------------
 # Baseline (FIXED COMPLETELY)
 # ---------------------------------------------------------------------------
+
+def _safe_round(x: float) -> float:
+    """Safely clamp and round a value to ensure it stays in (0, 1)."""
+    x = float(x)
+    # First clamp
+    if x <= 0.0 or x != x:  # also catches NaN
+        x = EPS
+    elif x >= 1.0:
+        x = 1.0 - EPS
+    
+    # Round to 6 decimal places
+    x = float(f"{x:.6f}")
+    
+    # SECOND CLAMP after rounding (CRITICAL - prevents rounding to 0 or 1)
+    if x <= 0.0:
+        x = EPS
+    elif x >= 1.0:
+        x = 1.0 - EPS
+    
+    return x
+
+
 def _baseline_scores() -> Dict[str, BaselineScore]:
     _MAP = {
         "spam": ("spam", "low", "flag_spam"),
@@ -99,20 +121,17 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
 
             scores.append(r)
 
-        # clamp scores list WITH ROUNDING - CRITICAL for validator
-        scores = [
-            float(f"{max(EPS, min(1.0 - EPS, float(s))):.6f}")
-            for s in scores
-        ]
+        # clamp scores list WITH ROUNDING - using safe_round
+        scores = [_safe_round(s) for s in scores]
 
         raw_mean = sum(scores) / len(scores)
         raw_min = min(scores)
         raw_max = max(scores)
 
-        # clamp + format safely
-        mean_r = float(f"{max(EPS, min(1.0 - EPS, raw_mean)):.6f}")
-        min_r = float(f"{max(EPS, min(1.0 - EPS, raw_min)):.6f}")
-        max_r = float(f"{max(EPS, min(1.0 - EPS, raw_max)):.6f}")
+        # Use safe_round for mean/min/max (CRITICAL for validator)
+        mean_r = _safe_round(raw_mean)
+        min_r = _safe_round(raw_min)
+        max_r = _safe_round(raw_max)
 
         out[task] = BaselineScore(
             task=task,
@@ -124,7 +143,6 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
         )
 
     return out
-
 
 _BASELINE = _baseline_scores()
 

@@ -268,8 +268,14 @@ def compute_reward(
         reward = 1.0 - EPS
     
     reward = float(f"{reward:.6f}")
-    
-    assert 0.0 < reward < 1.0, f"reward {reward!r} out of range after clamp"
+
+    # 🔥 CRITICAL FIX: SECOND CLAMP AFTER ROUNDING
+    if reward <= 0.0:
+        reward = EPS
+    elif reward >= 1.0:
+        reward = 1.0 - EPS
+
+    assert 0.0 < reward < 1.0
     # ===========================================================
 
     info["reward"] = reward
