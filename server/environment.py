@@ -60,8 +60,13 @@ class EmailEnv:
         elif reward >= 1.0:
             reward = 1.0 - EPS
 
-        # 🔥 CRITICAL FIX
         reward = float(f"{reward:.6f}")
+
+        # 🔥 SECOND CLAMP AFTER ROUNDING (FINAL FIX)
+        if reward <= 0.0:
+            reward = EPS
+        elif reward >= 1.0:
+            reward = 1.0 - EPS
         
         self._history.append({
             "step": self._step,
