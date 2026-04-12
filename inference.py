@@ -34,6 +34,7 @@ from openai import OpenAI
 from app.client import EmailTriageEnvClient
 from app.models import EmailAction, EmailObservation
 
+EPS = 1e-6
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -131,6 +132,16 @@ _SYSTEM: Dict[str, str] = {
 # Logging helpers  (mandatory stdout format — do NOT modify)
 # ---------------------------------------------------------------------------
 
+def _clamp_reward(r: float) -> float:
+    """Ensure reward is strictly inside (0, 1) before logging."""
+    r = float(r)
+    if r <= 0.0 or r != r:
+        return EPS
+    if r >= 1.0:
+        return 1.0 - EPS
+    return r
+
+
 def log_start(task: str, model: str) -> None:
     print(f"[START] task={task} env={BENCHMARK} model={model}", flush=True)
 
@@ -139,17 +150,19 @@ def log_step(
     step: int, action_summary: str, reward: float, done: bool, error: Optional[str]
 ) -> None:
     err = error if error else "null"
+    r = _clamp_reward(reward)
     print(
         f"[STEP] step={step} action={action_summary} "
-        f"reward={reward:.6f} done={str(done).lower()} error={err}",
+        f"reward={r:.8f} done={str(done).lower()} error={err}",
         flush=True,
     )
 
 
 def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+    clamped = [_clamp_reward(r) for r in rewards]
     print(
         f"[END] success={str(success).lower()} steps={steps} "
-        f"rewards={','.join(f'{r:.6f}' for r in rewards)}",
+        f"rewards={','.join(f'{r:.8f}' for r in clamped)}",
         flush=True,
     )
 
@@ -297,8 +310,19 @@ async def run_episode(env: EmailTriageEnvClient, task: str, llm: OpenAI) -> None
             log_step(step=step, action_summary=_summary(action),
                      reward=reward, done=done, error=api_error)
 
-        n       = len(rewards)
-        mean    = sum(rewards) / n if n else 0.0
+        n = len(rewards)
+        if n == 0:
+            mean = EPS
+        else:
+            raw_mean = sum(rewards) / n
+            # Clamp mean to safe range
+            if raw_mean <= 0.0:
+                mean = EPS
+            elif raw_mean >= 1.0:
+                mean = 1.0 - EPS
+            else:
+                mean = raw_mean
+
         success = mean >= SUCCESS_THRESHOLD
 
     finally:
@@ -330,4 +354,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
