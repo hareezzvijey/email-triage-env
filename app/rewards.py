@@ -260,23 +260,11 @@ def compute_reward(
     else:
         reward = EPS
 
-    # ========== FINAL CLAMP (SAFE - NO ROUNDING) ==========
-    # Clamp to safe bounds first
-    reward = max(EPS, min(1.0 - EPS, reward))
-    
-    # Final safety check
-    if reward <= 0:
-        reward = EPS
-    if reward >= 1:
-        reward = 1.0 - EPS
-    
-    # Round to 9 decimals safely (preserves EPS)
-    reward = round(reward, 9)
-    if reward <= 0:
-        reward = EPS
-    if reward >= 1:
-        reward = 1.0 - EPS
-    # =======================================================
+    # ========== FINAL CLAMP — strictly inside (0, 1) ==========
+    # Never use round() or string formatting here: both can snap
+    # edge values to exactly 0.0 or 1.0, failing Phase 2 validation.
+    reward = max(EPS, min(1.0 - EPS, float(reward)))
+    # ===========================================================
 
     info["reward"] = reward
     return reward, info
