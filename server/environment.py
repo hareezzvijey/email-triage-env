@@ -53,9 +53,15 @@ class EmailEnv:
         # Convert action to dict for compute_reward if needed
         action_dict = action.model_dump(exclude_none=True) if hasattr(action, 'model_dump') else action.__dict__
         reward, info = compute_reward(action_dict, email["ground_truth"], self.task)
-        # Clamp strictly inside (0, 1) — never use string formatting which can
-        # round edge values to exactly 0.0 or 1.0 and fail Phase 2 validation.
-        reward = max(EPS, min(1.0 - EPS, float(reward)))
+        # Clamp strictly inside (0, 1) — explicit guards, no string formatting
+        reward = float(reward)
+        if reward <= 0.0 or reward != reward:
+            reward = EPS
+        elif reward >= 1.0:
+            reward = 1.0 - EPS
+
+        # 🔥 CRITICAL FIX
+        reward = float(f"{reward:.6f}")
         
         self._history.append({
             "step": self._step,
@@ -88,7 +94,7 @@ class EmailEnv:
             step_count=self._step,
             task=self.task,
             done=self._done,
-            total_reward=round(self._total_reward, 6),
+            total_reward=self._total_reward,
             emails_processed=self._email_index,
             emails_remaining=max(0, total - self._email_index),
             action_history=self._history,
