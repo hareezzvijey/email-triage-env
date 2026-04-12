@@ -27,25 +27,6 @@ Sessions expire after 2 h of inactivity (cleaned on every request + background t
 
 from __future__ import annotations
 
-# ============================================================================
-# FORCE CACHE CLEAR - MUST BE FIRST LINE
-# ============================================================================
-import sys
-import os
-
-# Delete all cached modules
-for module in list(sys.modules.keys()):
-    if module.startswith(('app.', 'server.')):
-        del sys.modules[module]
-
-# Disable future bytecode caching
-sys.dont_write_bytecode = True
-
-# Set environment flag
-os.environ['FORCE_RELOAD'] = 'true'
-
-print("[CACHE] Forced reload of all modules", flush=True)
-# ============================================================================
 
 import asyncio
 import uuid
@@ -68,20 +49,9 @@ from app.models import (
 from app.rewards import compute_reward
 from server.environment import EmailEnv, VALID_TASKS, TASK_DESCRIPTIONS
 
-# ---------------------------------------------------------------------------
-# Optional openenv-core integration
-# ---------------------------------------------------------------------------
-try:
-    from openenv.core.env_server import create_fastapi_app as _oe_factory  # type: ignore
-    _HAVE_OPENENV = True
-except ImportError:
-    _HAVE_OPENENV = False
+_HAVE_OPENENV = False  # Never delegate to openenv-core factory
 
-
-def create_fastapi_app(env_class: type = EmailEnv) -> FastAPI:
-    if _HAVE_OPENENV:
-        from app.models import EmailAction, EmailObservation
-        return _oe_factory(env_class, EmailAction, EmailObservation)
+def create_fastapi_app(env_class=EmailEnv):
     return _build_app()
 
 
