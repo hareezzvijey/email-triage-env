@@ -287,6 +287,6 @@ All graders are fully deterministic — run `python inference.py` to reproduce.
 Apache 2.0
 
 ## 🏆 Live Space
-
+```
 **API Endpoint:** `https://hareezz-email-triage-env.hf.space`
 ```
