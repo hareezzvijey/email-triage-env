@@ -261,9 +261,15 @@ def compute_reward(
         reward = EPS
 
     # ========== FINAL CLAMP — strictly inside (0, 1) ==========
-    # Never use round() or string formatting here: both can snap
-    # edge values to exactly 0.0 or 1.0, failing Phase 2 validation.
-    reward = max(EPS, min(1.0 - EPS, float(reward)))
+    reward = float(reward)
+    if reward <= 0.0 or reward != reward:   # also catches NaN
+        reward = EPS
+    elif reward >= 1.0:
+        reward = 1.0 - EPS
+    
+    reward = float(f"{reward:.6f}")
+    
+    assert 0.0 < reward < 1.0, f"reward {reward!r} out of range after clamp"
     # ===========================================================
 
     info["reward"] = reward
