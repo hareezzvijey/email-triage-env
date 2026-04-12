@@ -137,11 +137,8 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
             }
             r, _ = compute_reward(action_d, gt, task)
             
-            if r >= 1.0:
-                r = 1.0 - EPS
-            elif r <= 0.0:
-                r = EPS
-            scores.append(float(f"{r:.6f}"))
+            r = max(EPS, min(1.0 - EPS, float(r)))
+            scores.append(r)
         
         # Calculate statistics
         mean_r = sum(scores) / len(scores)
@@ -155,10 +152,10 @@ def _baseline_scores() -> Dict[str, BaselineScore]:
         out[task] = BaselineScore(
             task=task,
             emails=len(emails),
-            mean_reward=float(f"{mean_r:.6f}"),
-            min_reward=float(f"{min_r:.6f}"),
-            max_reward=float(f"{max_r:.6f}"),
-            scores=[float(f"{s:.6f}") for s in scores],
+            mean_reward=mean_r,
+            min_reward=min_r,
+            max_reward=max_r,
+            scores=scores,
         )
     return out
 
@@ -286,13 +283,9 @@ def _build_app() -> FastAPI:
         gt = ALL_EMAILS[email_id]["ground_truth"]
         reward, breakdown = compute_reward(action_d, gt, task)
 
-        # Apply EPS clamp once here as a safety net.
+        # Apply EPS clamp — never use string formatting which can round to exactly 1.0
         _EPS = 1e-6
-        if reward >= 1.0:
-            reward = 1.0 - _EPS
-        elif reward <= 0.0:
-            reward = _EPS
-        reward = float(f"{reward:.6f}")
+        reward = max(_EPS, min(1.0 - _EPS, float(reward)))
 
         return GraderResult(
             email_id=email_id,
